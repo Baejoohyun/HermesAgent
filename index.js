@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
+const { initMonitor, runAllChecks, getStatusReport } = require('./monitor');
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
@@ -248,6 +249,8 @@ bot.command('help', (ctx) => {
     `/wallets — Lihat semua wallet\n` +
     `/memory — Cek jumlah memory\n` +
     `/clearmemory — Hapus history chat\n` +
+    `/status — Cek kesehatan semua service\n` +
+    `/checkfix — Health check + auto-fix sekarang\n` +
     `/help — Bantuan ini\n\n` +
     `*Atau chat langsung:*\n` +
     `"clone repo https://github.com/..."\n` +
@@ -300,9 +303,26 @@ bot.on('message', async (ctx) => {
   }
 });
 
+bot.command('status', async (ctx) => {
+  if (ctx.message.from.id !== OWNER_ID) return;
+  ctx.reply('🔍 Mengecek semua service...', { parse_mode: 'Markdown' });
+  const report = await getStatusReport();
+  ctx.reply(report, { parse_mode: 'Markdown' });
+});
+
+bot.command('checkfix', async (ctx) => {
+  if (ctx.message.from.id !== OWNER_ID) return;
+  ctx.reply('🔧 Menjalankan health check + auto-fix...', { parse_mode: 'Markdown' });
+  await runAllChecks();
+  ctx.reply('✅ Health check selesai! Lihat laporan di atas.', { parse_mode: 'Markdown' });
+});
+
 // ─── LAUNCH ───────────────────────────────────────────────────────────────────
 bot.launch();
 console.log('[Hermes] Bot launched');
+
+// Init monitor setelah bot launch
+initMonitor(bot, OWNER_ID);
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
