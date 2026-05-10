@@ -62,7 +62,7 @@ async function check9Router() {
   // Cek apakah port 20128 listening
   const portCheck = await shell('curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://localhost:20128/');
   
-  if (portCheck.ok && (portCheck.output === '200' || portCheck.output === '301' || portCheck.output === '302')) {
+  if (portCheck.ok && ['200','301','302','303','307','308'].includes(portCheck.output)) {
     log('9Router: OK');
     return { status: 'ok', name: '9Router' };
   }
@@ -201,7 +201,7 @@ async function checkInternet() {
   
   const result = await shell('curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://api.telegram.org');
   
-  if (result.ok && result.output === '200') {
+  if (result.ok && ['200','301','302','303','307','308'].includes(result.output)) {
     log('Internet: OK');
     return { status: 'ok', name: 'Internet' };
   }
