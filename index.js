@@ -7,6 +7,7 @@ const path = require('path');
 const { promisify } = require('util');
 const execAsync = promisify(exec);
 const { initMonitor, runAllChecks, getStatusReport } = require('./monitor');
+const { executePlaywrightAction, screenshotUrl } = require('./playwright');
 
 // ─── CONFIG ───────────────────────────────────────────────────────────────────
 const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
@@ -104,7 +105,7 @@ KEMAMPUAN KAMU:
 1. Jalankan perintah bash/shell di VPS
 2. Clone repo, manage file dan direktori  
 3. Buat dan simpan wallet crypto
-4. Bantu otomasi task di web (berikan instruksi curl/script)
+4. Otomasi web: isi form, claim faucet, auto register, screenshot
 5. Ingat percakapan sebelumnya
 
 FORMAT PERINTAH KHUSUS (gunakan ini untuk eksekusi):
@@ -112,11 +113,16 @@ FORMAT PERINTAH KHUSUS (gunakan ini untuk eksekusi):
 - Untuk buat wallet: tulis \`\`\`create_wallet\n<label>\n\`\`\`
 - Untuk lihat daftar wallet: tulis \`\`\`list_wallets\`\`\`
 - Untuk hapus memory: tulis \`\`\`clear_memory\`\`\`
+- Untuk screenshot URL: tulis \`\`\`screenshot\n<url>\n\`\`\`
+- Untuk claim faucet: tulis \`\`\`claim_faucet\n<url>|<wallet_address>\n\`\`\`
+- Untuk isi form: tulis \`\`\`fill_form\n<JSON action>\n\`\`\`
+- Untuk auto register: tulis \`\`\`web_register\n<url>|<email>\n\`\`\`
 
 PENTING:
 - Kamu hanya melayani owner yang sudah diotorisasi
 - Selalu konfirmasi sebelum menjalankan perintah destruktif (rm -rf, dll)
 - Simpan semua wallet yang dibuat ke file wallets.json
+- Untuk batch task, lapor progress setiap entry
 - Jawab dalam bahasa Indonesia kecuali diminta lain`;
 
 // ─── PARSE & EKSEKUSI TOOL DARI RESPONSE AI ──────────────────────────────────
@@ -168,6 +174,87 @@ async function parseAndExecuteTools(aiText) {
     clearMemory();
     toolOutputs.push('\n🧹 Memory percakapan dihapus.');
     finalText = finalText.replace('```clear_memory```', '');
+  }
+
+  // 5. Screenshot URL
+  const screenshotRegex = /```screenshot\n([\s\S]*?)```/g;
+  while ((match = screenshotRegex.exec(aiText)) !== null) {
+    const url = match[1].trim();
+    console.log(`[Playwright] Screenshot: ${url}`);
+    try {
+      const screenshotPath = await screenshotUrl(url);
+      if (screenshotPath) {
+        toolOutputs.push({ type: 'photo', path: screenshotPath, caption: `📸 Screenshot: ${url}` });
+      } else {
+        toolOutputs.push(`\n❌ Gagal screenshot: ${url}`);
+      }
+    } catch (e) {
+      toolOutputs.push(`\n❌ Screenshot error: ${e.message}`);
+    }
+    finalText = finalText.replace(match[0], '');
+  }
+
+  // 6. Claim faucet
+  const faucetRegex = /```claim_faucet\n([\s\S]*?)```/g;
+  while ((match = faucetRegex.exec(aiText)) !== null) {
+    const parts = match[1].trim().split('|');
+    const url = parts[0]?.trim();
+    const wallet = parts[1]?.trim();
+    if (url && wallet) {
+      console.log(`[Playwright] Claim faucet: ${url} → ${wallet.substring(0, 10)}...`);
+      toolOutputs.push(`\n⏳ Claiming faucet untuk ${wallet.substring(0, 10)}...`);
+      try {
+        const result = await executePlaywrightAction({ type: 'claim_faucet', url, wallet });
+        const status = result.success ? '✅' : '❌';
+        toolOutputs.push(`\n${status} *Faucet:* ${result.message}`);
+        if (result.screenshot) {
+          toolOutputs.push({ type: 'photo', path: result.screenshot, caption: `Faucet result` });
+        }
+      } catch (e) {
+        toolOutputs.push(`\n❌ Faucet error: ${e.message}`);
+      }
+    }
+    finalText = finalText.replace(match[0], '');
+  }
+
+  // 7. Web register
+  const registerRegex = /```web_register\n([\s\S]*?)```/g;
+  while ((match = registerRegex.exec(aiText)) !== null) {
+    const parts = match[1].trim().split('|');
+    const url = parts[0]?.trim();
+    const email = parts[1]?.trim();
+    if (url && email) {
+      console.log(`[Playwright] Register: ${url} → ${email}`);
+      try {
+        const result = await executePlaywrightAction({ type: 'register', url, email });
+        const status = result.success ? '✅' : '❌';
+        toolOutputs.push(`\n${status} *Register:*\n${result.message}`);
+        if (result.screenshot) {
+          toolOutputs.push({ type: 'photo', path: result.screenshot, caption: `Register result` });
+        }
+      } catch (e) {
+        toolOutputs.push(`\n❌ Register error: ${e.message}`);
+      }
+    }
+    finalText = finalText.replace(match[0], '');
+  }
+
+  // 8. Fill form (JSON)
+  const fillFormRegex = /```fill_form\n([\s\S]*?)```/g;
+  while ((match = fillFormRegex.exec(aiText)) !== null) {
+    try {
+      const action = JSON.parse(match[1].trim());
+      console.log(`[Playwright] Fill form: ${action.url}`);
+      const result = await executePlaywrightAction({ type: 'fill_form', ...action });
+      const status = result.success ? '✅' : '❌';
+      toolOutputs.push(`\n${status} *Form:* ${result.message}`);
+      if (result.screenshot) {
+        toolOutputs.push({ type: 'photo', path: result.screenshot, caption: `Form result` });
+      }
+    } catch (e) {
+      toolOutputs.push(`\n❌ Fill form error: ${e.message}`);
+    }
+    finalText = finalText.replace(match[0], '');
   }
 
   return {
@@ -265,7 +352,7 @@ bot.command('help', (ctx) => {
 bot.on('message', async (ctx) => {
   if (ctx.message.from.id !== OWNER_ID) return;
   const text = ctx.message.text;
-  if (!text || text.startsWith('/')) return;
+  if (!text || text.startsWith('/')) return; // ← sudah ada, tapi pastikan ini jalan
 
   console.log(`[MSG] ${text}`);
 
@@ -294,7 +381,15 @@ bot.on('message', async (ctx) => {
 
     // Kirim tool outputs
     for (const output of toolOutputs) {
-      await ctx.reply(output, { parse_mode: 'Markdown' }).catch(() => ctx.reply(output));
+      if (typeof output === 'string') {
+        await ctx.reply(output, { parse_mode: 'Markdown' }).catch(() => ctx.reply(output));
+      } else if (output.type === 'photo' && output.path) {
+        try {
+          await ctx.replyWithPhoto({ source: output.path }, { caption: output.caption || '' });
+        } catch (e) {
+          await ctx.reply(`📸 Screenshot disimpan di VPS: ${output.path}`);
+        }
+      }
     }
 
   } catch (error) {
